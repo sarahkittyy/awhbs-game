@@ -1,0 +1,10 @@
+/target
+/dist
+/raw
+/.env
+*.log
+settings.txt
+# source downloads kept beside the project; the game uses its copies under assets/
+/*.glb
+/*.webp
+/release-native

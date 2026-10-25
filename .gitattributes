@@ -1,0 +1,8 @@
+*.sh text eol=lf
+*.yml text eol=lf
+*.sql text eol=lf
+*.conf text eol=lf
+*.glb binary
+*.ogg binary
+*.png binary
+*.ttf binary

@@ -1,0 +1,14 @@
+# Local MariaDB for the leaderboard server, same major version as production (10.11).
+#   docker compose up -d
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: pawsword
+      MARIADB_DATABASE: awhbs
+    ports:
+      - "3306:3306"
+    volumes:
+      - awhbs-db:/var/lib/mysql
+volumes:
+  awhbs-db:
