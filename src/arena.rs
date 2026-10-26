@@ -102,7 +102,8 @@ fn setup(
             intensity: 60_000.0,
             range: 22.0,
             color: Color::srgb(1.0, 0.86, 0.6),
-            shadow_maps_enabled: true,
+            // a point light shadow is six extra passes a frame; too much for the browser build
+            shadow_maps_enabled: !cfg!(target_arch = "wasm32"),
             ..default()
         },
         Transform::from_xyz(-0.5 * ARENA_SCALE, 3.1 * ARENA_SCALE, 2.5 * ARENA_SCALE),

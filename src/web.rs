@@ -18,7 +18,7 @@ pub struct WebPlugin;
 
 impl Plugin for WebPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, report_progress)
+        app.add_systems(Update, (report_progress, log_slow_frames))
             .add_systems(Update, pointer_lock.run_if(in_state(GameState::Playing)))
             .add_systems(OnEnter(GameState::Playing), |mut l: ResMut<LockState>| l.had_lock = false)
             .init_resource::<LockState>();
@@ -39,6 +39,20 @@ fn report_progress(server: Res<AssetServer>, assets: Option<Res<GameAssets>>, mu
     if *last != Some((loaded, total)) {
         *last = Some((loaded, total));
         let _ = awhbs_progress(loaded, total);
+    }
+}
+
+/// Frames over 50 ms go to the browser console (at most once a second), to spot hitches.
+fn log_slow_frames(time: Res<Time<Real>>, mut quiet_until: Local<f32>, mut worst: Local<f32>) {
+    let dt = time.delta_secs();
+    let now = time.elapsed_secs();
+    if dt > 0.05 {
+        *worst = worst.max(dt);
+        if now >= *quiet_until {
+            info!("slow frame: {:.0} ms", *worst * 1000.0);
+            *worst = 0.0;
+            *quiet_until = now + 1.0;
+        }
     }
 }
 

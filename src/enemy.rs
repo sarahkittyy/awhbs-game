@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 pub use crate::balance::Kind;
 use crate::balance::{self, Attack, ARENA_RADIUS, GRAVITY, PLAYER_H, PLAYER_RADIUS};
-use crate::fx::{Billboard, Fx, Particle};
+use crate::fx::{Billboard, Fx, Look, MatCache, Particle};
 use crate::pickup::{spawn_pickup, PickKind};
 use crate::player::{Player, PlayerHit};
 use crate::projectile::spawn_projectile;
@@ -20,7 +20,8 @@ pub struct Enemy {
     strafe: f32,
     phase: f32,
     anim: f32,
-    mat: Handle<StandardMaterial>,
+    /// The billboard child, whose material is swapped per animation frame.
+    sprite: Entity,
 }
 
 #[derive(Component)]
@@ -97,19 +98,22 @@ fn spawn_enemies(
 fn spawn_enemy(fx: &mut Fx, kind: Kind, pos: Vec3, t: f32) {
     let info = kind.info();
     let frame = fx.assets.enemies[&kind].idle[0].clone();
-    let mat = fx.materials.add(StandardMaterial {
-        base_color_texture: Some(frame.clone()),
-        emissive: LinearRgba::rgb(0.2, 0.2, 0.2),
-        emissive_texture: Some(frame),
-        alpha_mode: AlphaMode::Mask(0.45),
-        cull_mode: None,
-        perceptual_roughness: 0.85,
-        reflectance: 0.15,
-        ..default()
-    });
+    let mat = fx.cached(&frame, Color::WHITE, Look::Sprite);
     let w = info.height * info.aspect;
     let quad = fx.assets.quad.clone();
     let speed_mult = balance::speed_mult(t);
+    let sprite = fx
+        .commands
+        .spawn((
+            Mesh3d(quad),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(0.0, info.height / 2.0, 0.0).with_scale(Vec3::new(w, info.height, 1.0)),
+            Billboard {
+                upright: true,
+                spin: 0.0,
+            },
+        ))
+        .id();
     fx.commands
         .spawn((
             RunEntity,
@@ -124,20 +128,12 @@ fn spawn_enemy(fx: &mut Fx, kind: Kind, pos: Vec3, t: f32) {
                 strafe: if fastrand::bool() { 1.0 } else { -1.0 },
                 phase: rand_range(0.0, 6.28),
                 anim: rand_range(0.0, 1.0),
-                mat: mat.clone(),
+                sprite,
             },
             Transform::from_translation(pos + Vec3::Y * info.hover),
             Visibility::default(),
         ))
-        .with_child((
-            Mesh3d(quad),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(0.0, info.height / 2.0, 0.0).with_scale(Vec3::new(w, info.height, 1.0)),
-            Billboard {
-                upright: true,
-                spin: 0.0,
-            },
-        ));
+        .add_child(sprite);
     let smoke = fx.assets.p_smoke.clone();
     for _ in 0..3 {
         fx.particle(
@@ -168,7 +164,7 @@ fn ai(
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
     let ppos = pt.translation;
-    let chest = ppos + Vec3::Y * PLAYER_H * player.height_scale() * 0.6;
+    let chest = ppos + Vec3::Y * PLAYER_H * 0.6;
 
     // gentle separation so crowds don't stack into one sprite
     let snapshot: Vec<(Entity, Vec3, f32, bool)> = enemies
@@ -264,7 +260,7 @@ fn ai(
         // contact damage
         let pos = t.translation;
         let horiz = flat(ppos - pos).length();
-        let top = ppos.y + PLAYER_H * player.height_scale();
+        let top = ppos.y + PLAYER_H;
         if horiz < r + PLAYER_RADIUS && pos.y < top && pos.y + info.height > ppos.y {
             hit_player.write(PlayerHit { from: pos });
             // bounce off her, unless already flying away (a pounce that connected bounces too)
@@ -315,7 +311,9 @@ fn animate(
     time: Res<Time>,
     assets: Res<crate::assets::GameAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut cache: ResMut<MatCache>,
     mut enemies: Query<&mut Enemy, Without<Dying>>,
+    mut sprites: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
     for mut en in &mut enemies {
         en.anim += time.delta_secs();
@@ -326,13 +324,10 @@ fn animate(
             (&frames.idle, Color::WHITE)
         };
         let img = &set[(en.anim * 6.0) as usize % set.len()];
-        if let Some(mut m) = materials.get_mut(&en.mat) {
-            if m.base_color_texture.as_ref() != Some(img) {
-                m.base_color_texture = Some(img.clone());
-                m.emissive_texture = Some(img.clone());
-            }
-            if m.base_color != tint {
-                m.base_color = tint;
+        let want = cache.get(&mut materials, img, tint, Look::Sprite);
+        if let Ok(mut mat) = sprites.get_mut(en.sprite) {
+            if mat.0 != want {
+                mat.0 = want;
             }
         }
     }
@@ -343,7 +338,9 @@ fn dying(
     time: Res<Time>,
     assets: Res<crate::assets::GameAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut cache: ResMut<MatCache>,
     mut q: Query<(Entity, &Enemy, &mut Dying, &mut Transform)>,
+    mut sprites: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
     let dt = time.delta_secs();
     for (e, en, mut d, mut t) in &mut q {
@@ -353,12 +350,14 @@ fn dying(
         }
         let frames = &assets.enemies[&en.kind].dead;
         let i = ((d.t * 8.0) as usize).min(frames.len() - 1);
+        // play the defeat frames, then shrink into the floor
         let fade = (1.0 - (d.t - 0.6) / 0.5).clamp(0.0, 1.0);
-        if let Some(mut m) = materials.get_mut(&en.mat) {
-            m.base_color_texture = Some(frames[i].clone());
-            m.emissive_texture = Some(frames[i].clone());
-            m.base_color = Color::WHITE.with_alpha(fade);
-            m.emissive = LinearRgba::rgb(0.2, 0.2, 0.2) * fade;
+        t.scale = Vec3::splat(fade.max(0.001));
+        let want = cache.get(&mut materials, &frames[i], Color::WHITE, Look::Sprite);
+        if let Ok(mut mat) = sprites.get_mut(en.sprite) {
+            if mat.0 != want {
+                mat.0 = want;
+            }
         }
         if d.t > 1.1 {
             commands.entity(e).despawn();

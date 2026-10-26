@@ -6,7 +6,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::arena::{GameCamera, ARENA_SCALE};
 use crate::balance::{
-    ARENA_RADIUS, CROUCH_MULT, GRAVITY, INVULN, JUMP_VEL, KNOCKBACK, PLAYER_H, PLAYER_W, SPRINT_MULT, START_HP, WALK_SPEED,
+    ARENA_RADIUS, GRAVITY, INVULN, JUMP_VEL, KNOCKBACK, PLAYER_H, PLAYER_W, SPRINT_MULT, START_HP, WALK_SPEED,
 };
 use crate::assets::{play, GameAssets};
 use crate::fx::Shard;
@@ -26,7 +26,6 @@ pub struct Player {
     pub vel: Vec3,
     pub grounded: bool,
     pub invuln: f32,
-    pub crouch: f32,
     pub sprinting: bool,
     /// forward lean while sprinting, radians
     lean: f32,
@@ -34,10 +33,6 @@ pub struct Player {
 }
 
 impl Player {
-    /// Vertical squash from crouching, 1.0 standing, 0.5 crouched.
-    pub fn height_scale(&self) -> f32 {
-        1.0 - 0.5 * self.crouch
-    }
 }
 
 #[derive(Component)]
@@ -80,7 +75,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(Update, spawn_player)
             .add_systems(
                 Update,
-                (movement, crouch_visuals, take_hits, blink)
+                (movement, lean_visuals, take_hits, blink)
                     .chain()
                     .run_if(in_state(GameState::Playing)),
             )
@@ -139,7 +134,6 @@ fn spawn_player(
                 vel: Vec3::ZERO,
                 grounded: true,
                 invuln: 0.0,
-                crouch: 0.0,
                 sprinting: false,
                 lean: 0.0,
                 step: 0.0,
@@ -175,15 +169,12 @@ fn movement(
     let a = keys.pressed(KeyCode::KeyA);
     let s = keys.pressed(KeyCode::KeyS);
     let d = keys.pressed(KeyCode::KeyD);
-    let crouching = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     // sprint is forward-only: any strafe or backpedal cancels it, but it resumes once released
-    p.sprinting = shift && w && !a && !d && !s && !crouching;
+    p.sprinting = shift && w && !a && !d && !s;
 
     let target_lean = if p.sprinting { SPRINT_LEAN } else { 0.0 };
     p.lean += (target_lean - p.lean) * (1.0 - (-12.0 * dt).exp());
-    let target_crouch = if crouching { 1.0 } else { 0.0 };
-    p.crouch += (target_crouch - p.crouch) * (1.0 - (-18.0 * dt).exp());
 
     let mut input = Vec3::ZERO;
     if w {
@@ -201,9 +192,6 @@ fn movement(
     let mut speed = WALK_SPEED * buffs.speed_mult();
     if p.sprinting {
         speed *= SPRINT_MULT;
-    }
-    if crouching {
-        speed *= CROUCH_MULT;
     }
     let wish = t.rotation * input.normalize_or_zero() * speed;
     let horiz = flat(p.vel);
@@ -240,7 +228,7 @@ fn movement(
         if p.step <= 0.0 {
             p.step = 1.0;
             let i = fastrand::usize(..assets.sfx.footsteps.len());
-            play(&mut commands, &assets.sfx.footsteps[i], if crouching { 0.1 } else { 0.22 });
+            play(&mut commands, &assets.sfx.footsteps[i], 0.22);
         }
     }
     if p.invuln > 0.0 {
@@ -248,14 +236,9 @@ fn movement(
     }
 }
 
-fn crouch_visuals(
-    players: Query<&Player>,
-    mut body: Query<&mut Transform, With<PlayerBody>>,
-) {
+fn lean_visuals(players: Query<&Player>, mut body: Query<&mut Transform, With<PlayerBody>>) {
     let Ok(p) = players.single() else { return };
-    let s = p.height_scale();
     for mut t in &mut body {
-        t.scale.y = s;
         // tip forward (toward -Z) around her feet
         t.rotation = Quat::from_rotation_x(-p.lean);
     }
@@ -311,7 +294,7 @@ fn take_hits(
         if p.hp <= 0 {
             *vis = Visibility::Hidden;
             death.0 = t.translation;
-            shatter(&mut commands, &assets, &mut meshes, &mut materials, t, p.height_scale());
+            shatter(&mut commands, &assets, &mut meshes, &mut materials, t);
             play(&mut commands, &assets.sfx.glass_shatter, 1.0);
             time.set_relative_speed(0.35);
             next.set(GameState::Dead);
@@ -327,7 +310,6 @@ fn shatter(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     t: &Transform,
-    height_scale: f32,
 ) {
     let mat = materials.add(StandardMaterial {
         base_color_texture: Some(assets.awhbs.clone()),
@@ -351,7 +333,7 @@ fn shatter(
             *g = uv;
         }
     }
-    let h = PLAYER_H * height_scale;
+    let h = PLAYER_H;
     let to_world = |uv: Vec2| {
         // uv (0,0) is the top-left of the image; the back card faces +Z
         let local = Vec3::new((uv.x - 0.5) * PLAYER_W, (1.0 - uv.y) * h, 0.0);
@@ -408,10 +390,10 @@ fn camera_play(
     assets: Res<GameAssets>,
     mut commands: Commands,
     mut rig: ResMut<CamRig>,
-    players: Query<(&Player, &Transform), Without<GameCamera>>,
+    players: Query<&Transform, (With<Player>, Without<GameCamera>)>,
     mut cam: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
 ) {
-    let Ok((p, pt)) = players.single() else { return };
+    let Ok(pt) = players.single() else { return };
     let Ok((mut ct, mut proj)) = cam.single_mut() else { return };
     let dt = time.delta_secs();
 
@@ -429,7 +411,7 @@ fn camera_play(
     rig.pitch = (rig.pitch - motion.delta.y * sens).clamp(-1.25, 1.1);
 
     let rot = Quat::from_euler(EulerRot::YXZ, rig.yaw, rig.pitch, 0.0);
-    let pivot = pt.translation + Vec3::Y * (1.45 * p.height_scale() + 0.15);
+    let pivot = pt.translation + Vec3::Y * 1.6;
     let offset = Vec3::new(1.15, 0.35, 3.6).lerp(Vec3::new(1.05, 0.3, 2.0), rig.zoom);
     ct.translation = pivot + rot * offset;
     ct.rotation = rot;

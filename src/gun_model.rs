@@ -178,7 +178,7 @@ fn animate(
     let tilt = if reloading { ramp(r, 0.0, 0.15) * (1.0 - ramp(r, 0.85, 1.0)) } else { 0.0 };
 
     // --- whole-gun pose
-    let mut pos = HOLD * Vec3::new(1.0, player.height_scale(), 1.0);
+    let mut pos = HOLD;
     // barrel splayed outward so the camera behind her sees the rifle side-on
     let mut rot = Quat::from_euler(EulerRot::YXZ, -0.45, 0.04, 0.12);
     // sprint: carried at high port, barrel tipped up at her side

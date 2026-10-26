@@ -26,7 +26,8 @@ pub struct Pickup {
     kind: PickKind,
     life: f32,
     phase: f32,
-    mat: Handle<StandardMaterial>,
+    /// Sprite texture; the pickup blinks by swapping between two cached materials of it.
+    image: Handle<Image>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -147,7 +148,7 @@ pub fn spawn_pickup(fx: &mut Fx, kind: PickKind, pos: Vec3) {
                 kind,
                 life: PICKUP_LIFE,
                 phase: rand_range(0.0, 6.28),
-                mat: mat.clone(),
+                image: img.clone(),
             },
             Transform::from_translation(pos),
             Visibility::default(),
@@ -230,7 +231,7 @@ fn update_pickups(
     mut inv: ResMut<Inventory>,
     mut players: Query<(&Transform, &mut Player), Without<Pickup>>,
     mut pickups: Query<(Entity, &mut Pickup, &Transform, &Children)>,
-    mut sprites: Query<&mut Transform, (Without<Pickup>, Without<Player>, With<Billboard>)>,
+    mut sprites: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), (Without<Pickup>, Without<Player>, With<Billboard>)>,
 ) {
     let Ok((pt, mut player)) = players.single_mut() else { return };
     let dt = time.delta_secs();
@@ -242,14 +243,15 @@ fn update_pickups(
             continue;
         }
         // bob, and blink during the last few seconds
-        if let Some(&c) = children.first() {
-            if let Ok(mut st) = sprites.get_mut(c) {
-                st.translation.y = 0.9 + (now * 2.5 + pk.phase).sin() * 0.15;
-            }
-        }
         let visible = pk.life > 5.0 || (pk.life * 8.0) as i32 % 2 == 0;
-        if let Some(mut m) = fx.materials.get_mut(&pk.mat) {
-            m.base_color = Color::WHITE.with_alpha(if visible { 1.0 } else { 0.15 });
+        if let Some(&c) = children.first() {
+            if let Ok((mut st, mut mat)) = sprites.get_mut(c) {
+                st.translation.y = 0.9 + (now * 2.5 + pk.phase).sin() * 0.15;
+                let want = fx.unlit(&pk.image, Color::WHITE.with_alpha(if visible { 1.0 } else { 0.15 }));
+                if mat.0 != want {
+                    mat.0 = want;
+                }
+            }
         }
 
         let d = flat(pt.translation - t.translation).length();

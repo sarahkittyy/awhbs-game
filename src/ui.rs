@@ -33,6 +33,8 @@ enum MenuButton {
     Settings,
     Back,
     Submit,
+    /// Leave the run for the title screen.
+    Menu,
 }
 
 /// The leaderboard on the title and death screens; rebuilt when the board changes.
@@ -163,7 +165,9 @@ fn escape(
             settings.save();
             *screen = Screen::Main;
         }
-        (GameState::Paused, Screen::Main) => next.set(GameState::Playing),
+        // in the browser Esc also drops pointer lock, so resuming on it would pause right away
+        // again; the "play" button resumes there
+        (GameState::Paused, Screen::Main) if !cfg!(target_arch = "wasm32") => next.set(GameState::Playing),
         _ => {}
     }
 }
@@ -288,6 +292,7 @@ fn sync_menu(
         GameState::Paused => {
             text_button(r, &assets, "play", MenuButton::Resume);
             text_button(r, &assets, "settings", MenuButton::Settings);
+            text_button(r, &assets, "menu", MenuButton::Menu);
         }
         GameState::Dead => {
             r.spawn((Text::new("NOOB DOWN!!!!!"), font(&assets, 130.0), TextColor(INK)));
@@ -358,10 +363,9 @@ fn board_root(parent: &mut ChildSpawnerCommands) {
         BoardPanel,
         Node {
             position_type: PositionType::Absolute,
-            right: percent(4),
-            top: percent(50),
+            right: px(28),
+            top: px(28),
             width: px(380),
-            margin: UiRect::top(px(-260)),
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(px(16)),
             row_gap: px(2),
@@ -586,6 +590,10 @@ fn buttons(
                     }
                     MenuButton::Submit => {
                         submit.write(SubmitScore);
+                    }
+                    MenuButton::Menu => {
+                        *screen = Screen::Main;
+                        next.set(GameState::Title);
                     }
                 }
             }

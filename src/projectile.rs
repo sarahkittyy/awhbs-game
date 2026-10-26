@@ -57,14 +57,14 @@ pub fn spawn_projectile(fx: &mut Fx, kind: ProjKind, pos: Vec3, vel: Vec3) {
 fn update(
     time: Res<Time>,
     mut fx: Fx,
-    players: Query<(&Transform, &Player), Without<Projectile>>,
+    players: Query<&Transform, (With<Player>, Without<Projectile>)>,
     mut q: Query<(Entity, &mut Projectile, &mut Transform, &mut Billboard)>,
     mut hit_player: MessageWriter<PlayerHit>,
 ) {
-    let Ok((pt, player)) = players.single() else { return };
+    let Ok(pt) = players.single() else { return };
     let dt = time.delta_secs();
     let ppos = pt.translation;
-    let chest = ppos + Vec3::Y * PLAYER_H * player.height_scale() * 0.55;
+    let chest = ppos + Vec3::Y * PLAYER_H * 0.55;
 
     for (e, mut p, mut t, mut bb) in &mut q {
         p.life -= dt;
@@ -83,7 +83,7 @@ fn update(
         let mut gone = p.life <= 0.0 || flat(pos).length() > ARENA_RADIUS + 12.0;
         let mut explode = false;
 
-        if balance::hits_player(ppos, player.height_scale(), pos, p.radius) {
+        if balance::hits_player(ppos, pos, p.radius) {
             if p.kind == ProjKind::Bomb {
                 explode = true;
             } else {
@@ -118,7 +118,7 @@ fn update(
         }
         if explode {
             fx.explosion(Vec3::new(pos.x, 0.0, pos.z), EXPLOSION_RADIUS);
-            let center = ppos + Vec3::Y * PLAYER_H * player.height_scale() * 0.5;
+            let center = ppos + Vec3::Y * PLAYER_H * 0.5;
             if center.distance(Vec3::new(pos.x, 0.3, pos.z)) < EXPLOSION_RADIUS {
                 hit_player.write(PlayerHit { from: pos });
             }

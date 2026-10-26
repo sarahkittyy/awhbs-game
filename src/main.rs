@@ -128,6 +128,7 @@ fn main() {
         ))
         .add_plugins(DebugPlugins)
         .add_systems(Update, (start_run, apply_volume, tick_clock.run_if(in_state(GameState::Playing))))
+        .add_systems(OnEnter(GameState::Title), clear_run)
         .add_systems(OnEnter(GameState::Paused), |mut t: ResMut<Time<Virtual>>| t.pause())
         .add_systems(OnExit(GameState::Paused), |mut t: ResMut<Time<Virtual>>| t.unpause());
     #[cfg(target_arch = "wasm32")]
@@ -189,6 +190,15 @@ fn start_run(
     time.set_relative_speed(1.0);
     next.set(GameState::Playing);
     begin.write(RunBegin);
+}
+
+/// Back on the title screen (from the pause menu): the abandoned run is cleared away.
+fn clear_run(mut commands: Commands, run_entities: Query<Entity, With<RunEntity>>, mut time: ResMut<Time<Virtual>>) {
+    for e in &run_entities {
+        commands.entity(e).despawn();
+    }
+    time.unpause();
+    time.set_relative_speed(1.0);
 }
 
 pub fn rand_range(a: f32, b: f32) -> f32 {

@@ -7,7 +7,7 @@ use crate::arena::{ArenaRay, GameCamera};
 pub use crate::balance::{MAG_SIZE, MAX_RESERVE, RELOAD_TIME};
 use crate::balance::{self, BURST, BURST_COOLDOWN, BURST_GAP, GUN_RANGE as RANGE, SPREAD, START_RESERVE};
 use crate::enemy::{Dying, Enemy, EnemyHit};
-use crate::fx::{Billboard, Fx, Particle};
+use crate::fx::{faded, Billboard, Fx, Look, MatCache, Particle, ALPHA_STEPS};
 use crate::pickup::Buffs;
 use crate::gun_model::GunMuzzle;
 use crate::player::{CamRig, Player};
@@ -54,7 +54,10 @@ struct Decals(VecDeque<Entity>);
 #[derive(Component)]
 struct Decal {
     life: f32,
+    step: u8,
 }
+
+const DECAL_COLOR: Color = Color::srgba(0.07, 0.07, 0.08, 0.9);
 
 #[derive(SystemParam)]
 struct WorldRay<'w, 's> {
@@ -269,14 +272,7 @@ fn shoot(
 fn spawn_decal(fx: &mut Fx, decals: &mut Decals, at: Vec3, normal: Vec3) {
     let n = normal.normalize_or(Vec3::Y);
     let img = fx.assets.p_hole.clone();
-    let mat = fx.materials.add(StandardMaterial {
-        base_color: Color::srgba(0.07, 0.07, 0.08, 0.9),
-        base_color_texture: Some(img),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        depth_bias: 8.0,
-        ..default()
-    });
+    let mat = fx.cached(&img, DECAL_COLOR, Look::Decal);
     // quad normal is +Z; turn it to the surface normal, random spin around it
     let rot = Quat::from_rotation_arc(Vec3::Z, n) * Quat::from_rotation_z(rand_range(0.0, std::f32::consts::TAU));
     let size = rand_range(0.16, 0.24);
@@ -285,7 +281,7 @@ fn spawn_decal(fx: &mut Fx, decals: &mut Decals, at: Vec3, normal: Vec3) {
         .commands
         .spawn((
             RunEntity,
-            Decal { life: DECAL_LIFE },
+            Decal { life: DECAL_LIFE, step: ALPHA_STEPS },
             Mesh3d(quad),
             MeshMaterial3d(mat),
             Transform::from_translation(at + n * 0.012).with_rotation(rot).with_scale(Vec3::splat(size)),
@@ -305,16 +301,21 @@ fn fade_decals(
     time: Res<Time>,
     mut decals: ResMut<Decals>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(Entity, &mut Decal, &MeshMaterial3d<StandardMaterial>)>,
+    mut cache: ResMut<MatCache>,
+    assets: Res<crate::assets::GameAssets>,
+    mut q: Query<(Entity, &mut Decal, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    for (e, mut d, mat) in &mut q {
+    for (e, mut d, mut mat) in &mut q {
         d.life -= time.delta_secs();
         if d.life <= 0.0 {
             commands.entity(e).despawn();
             decals.0.retain(|x| *x != e);
         } else if d.life < 3.0 {
-            if let Some(mut m) = materials.get_mut(&mat.0) {
-                m.base_color.set_alpha(0.9 * d.life / 3.0);
+            // fade over the last 3 s in steps of shared materials
+            let step = ((d.life / 3.0) * ALPHA_STEPS as f32).ceil().clamp(1.0, ALPHA_STEPS as f32) as u8;
+            if step != d.step {
+                d.step = step;
+                mat.0 = cache.get(&mut materials, &assets.p_hole, faded(DECAL_COLOR, step), Look::Decal);
             }
         }
     }

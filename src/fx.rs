@@ -1,5 +1,6 @@
 use bevy::audio::Volume;
 use bevy::ecs::system::SystemParam;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::arena::GameCamera;
@@ -11,7 +12,7 @@ pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<MatCache>().add_systems(
             Update,
             (update_particles, update_flashes, update_shards, animate_frames)
                 .run_if(not(in_state(GameState::Paused))),
@@ -40,6 +41,10 @@ pub struct Particle {
     pub alpha: f32,
     pub color: Color,
     pub spin_speed: f32,
+    /// Texture, for swapping to a more transparent cached material as it fades.
+    pub image: Option<Handle<Image>>,
+    pub look: Look,
+    pub alpha_step: u8,
 }
 
 impl Default for Particle {
@@ -54,8 +59,77 @@ impl Default for Particle {
             alpha: 1.0,
             color: Color::WHITE,
             spin_speed: 0.0,
+            image: None,
+            look: Look::Unlit,
+            alpha_step: ALPHA_STEPS,
         }
     }
+}
+
+/// How a cached material is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Look {
+    /// Glowing / transparent effect quad.
+    #[default]
+    Unlit,
+    /// Lit, alpha-masked billboard sprite (enemies).
+    Sprite,
+    /// Unlit, pushed toward the camera so it sits on surfaces without z-fighting.
+    Decal,
+}
+
+/// Fades step through this many alpha levels of shared materials.
+pub const ALPHA_STEPS: u8 = 8;
+
+/// Shared materials keyed by texture, tint and look. Effects and sprites swap between these
+/// handles instead of creating or editing material assets every frame: each edit rebuilds GPU
+/// state, which in the browser showed up as hitches every few seconds.
+#[derive(Resource, Default)]
+pub struct MatCache(HashMap<(AssetId<Image>, [u32; 4], Look), Handle<StandardMaterial>>);
+
+impl MatCache {
+    pub fn get(
+        &mut self,
+        materials: &mut Assets<StandardMaterial>,
+        image: &Handle<Image>,
+        color: Color,
+        look: Look,
+    ) -> Handle<StandardMaterial> {
+        let key = (image.id(), color.to_linear().to_f32_array().map(f32::to_bits), look);
+        self.0
+            .entry(key)
+            .or_insert_with(|| {
+                let img = Some(image.clone());
+                materials.add(match look {
+                    Look::Unlit | Look::Decal => StandardMaterial {
+                        base_color: color,
+                        base_color_texture: img,
+                        unlit: true,
+                        alpha_mode: AlphaMode::Blend,
+                        cull_mode: None,
+                        depth_bias: if look == Look::Decal { 8.0 } else { 0.0 },
+                        ..default()
+                    },
+                    Look::Sprite => StandardMaterial {
+                        base_color: color,
+                        base_color_texture: img.clone(),
+                        emissive: LinearRgba::rgb(0.2, 0.2, 0.2),
+                        emissive_texture: img,
+                        alpha_mode: AlphaMode::Mask(0.45),
+                        cull_mode: None,
+                        perceptual_roughness: 0.85,
+                        reflectance: 0.15,
+                        ..default()
+                    },
+                })
+            })
+            .clone()
+    }
+}
+
+/// `color` with its alpha scaled by `step / ALPHA_STEPS`.
+pub fn faded(color: Color, step: u8) -> Color {
+    color.with_alpha(color.alpha() * step as f32 / ALPHA_STEPS as f32)
 }
 
 #[derive(Component)]
@@ -86,20 +160,17 @@ pub struct Frames {
 pub struct Fx<'w, 's> {
     pub commands: Commands<'w, 's>,
     pub materials: ResMut<'w, Assets<StandardMaterial>>,
+    pub cache: ResMut<'w, MatCache>,
     pub assets: Res<'w, GameAssets>,
 }
 
 impl Fx<'_, '_> {
     pub fn unlit(&mut self, image: &Handle<Image>, color: Color) -> Handle<StandardMaterial> {
-        self.materials.add(StandardMaterial {
-            base_color: color,
-            base_color_texture: Some(image.clone()),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            cull_mode: None,
-            fog_enabled: true,
-            ..default()
-        })
+        self.cached(image, color, Look::Unlit)
+    }
+
+    pub fn cached(&mut self, image: &Handle<Image>, color: Color, look: Look) -> Handle<StandardMaterial> {
+        self.cache.get(&mut self.materials, image, color, look)
     }
 
     pub fn sound(&mut self, sound: &Handle<AudioSource>, volume: f32) {
@@ -116,8 +187,11 @@ impl Fx<'_, '_> {
     }
 
     /// A camera-facing quad that moves, grows and fades out.
-    pub fn particle(&mut self, image: &Handle<Image>, pos: Vec3, p: Particle) -> Entity {
-        let mat = self.unlit(image, p.color.with_alpha(p.color.alpha() * p.alpha));
+    pub fn particle(&mut self, image: &Handle<Image>, pos: Vec3, mut p: Particle) -> Entity {
+        p.color = p.color.with_alpha(p.color.alpha() * p.alpha);
+        p.alpha = 1.0;
+        p.image = Some(image.clone());
+        let mat = self.unlit(image, p.color);
         let quad = self.assets.quad.clone();
         self.commands
             .spawn((
@@ -153,6 +227,7 @@ impl Fx<'_, '_> {
                 max_life: life,
                 size: (size, size),
                 color,
+                image: Some(image.clone()),
                 ..default()
             },
         ));
@@ -273,10 +348,11 @@ fn update_particles(
     mut commands: Commands,
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(Entity, &mut Particle, &mut Transform, &MeshMaterial3d<StandardMaterial>, Option<&mut Billboard>)>,
+    mut cache: ResMut<MatCache>,
+    mut q: Query<(Entity, &mut Particle, &mut Transform, &mut MeshMaterial3d<StandardMaterial>, Option<&mut Billboard>)>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut p, mut t, mat, bb) in &mut q {
+    for (e, mut p, mut t, mut mat, bb) in &mut q {
         p.life += dt;
         if p.life >= p.max_life {
             commands.entity(e).despawn();
@@ -297,10 +373,14 @@ fn update_particles(
         if let Some(mut bb) = bb {
             bb.spin += p.spin_speed * dt;
         }
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            // hold full opacity for the first half, then fade
-            let fade = if k < 0.5 { 1.0 } else { 1.0 - (k - 0.5) * 2.0 };
-            m.base_color = p.color.with_alpha(p.color.alpha() * p.alpha * fade);
+        // hold full opacity for the first half, then fade in steps of shared materials
+        let fade = if k < 0.5 { 1.0 } else { 1.0 - (k - 0.5) * 2.0 };
+        let step = (fade * ALPHA_STEPS as f32).ceil().clamp(1.0, ALPHA_STEPS as f32) as u8;
+        if step != p.alpha_step {
+            p.alpha_step = step;
+            if let Some(image) = p.image.clone() {
+                mat.0 = cache.get(&mut materials, &image, faded(p.color, step), p.look);
+            }
         }
     }
 }
@@ -348,9 +428,10 @@ fn animate_frames(
     mut commands: Commands,
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(Entity, &mut Frames, &MeshMaterial3d<StandardMaterial>)>,
+    mut cache: ResMut<MatCache>,
+    mut q: Query<(Entity, &mut Frames, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    for (e, mut f, mat) in &mut q {
+    for (e, mut f, mut mat) in &mut q {
         f.t += time.delta_secs();
         let mut i = (f.t * f.fps) as usize;
         if i >= f.frames.len() {
@@ -360,10 +441,9 @@ fn animate_frames(
             }
             i = if f.looping { i % f.frames.len() } else { f.frames.len() - 1 };
         }
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            if m.base_color_texture.as_ref() != Some(&f.frames[i]) {
-                m.base_color_texture = Some(f.frames[i].clone());
-            }
+        let want = cache.get(&mut materials, &f.frames[i], Color::WHITE, Look::Unlit);
+        if mat.0 != want {
+            mat.0 = want;
         }
     }
 }

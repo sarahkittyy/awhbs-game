@@ -20,7 +20,6 @@ pub const PLAYER_RADIUS: f32 = 0.45;
 pub const START_HP: i32 = 3;
 pub const WALK_SPEED: f32 = 6.5;
 pub const SPRINT_MULT: f32 = 1.65;
-pub const CROUCH_MULT: f32 = 0.5;
 pub const JUMP_VEL: f32 = 7.8;
 pub const INVULN: f32 = 1.0;
 /// Horizontal knockback speed when hit.
@@ -30,9 +29,9 @@ pub fn sprint_speed() -> f32 {
     WALK_SPEED * SPRINT_MULT
 }
 
-/// Point-vs-player test against the (crouch-scaled) upright card volume.
-pub fn hits_player(player_pos: Vec3, height_scale: f32, point: Vec3, radius: f32) -> bool {
-    let top = player_pos.y + PLAYER_H * height_scale - 0.1;
+/// Point-vs-player test against the upright card volume.
+pub fn hits_player(player_pos: Vec3, point: Vec3, radius: f32) -> bool {
+    let top = player_pos.y + PLAYER_H - 0.1;
     let bottom = player_pos.y + 0.1;
     let y = point.y.clamp(bottom, top);
     let closest = Vec3::new(player_pos.x, y, player_pos.z);

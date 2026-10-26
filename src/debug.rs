@@ -68,8 +68,8 @@ impl Plugin for DebugPlugin {
                                 "R" => KeyCode::KeyR,
                                 "W" => KeyCode::KeyW,
                                 "SHIFT" => KeyCode::ShiftLeft,
-                                "CTRL" => KeyCode::ControlLeft,
                                 "SPACE" => KeyCode::Space,
+                                "ESC" => KeyCode::Escape,
                                 _ => return None,
                             };
                             Some((key, v.get(1)?.parse().ok()?, v.get(2)?.parse().ok()?))

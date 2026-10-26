@@ -686,7 +686,7 @@ impl World {
             if p.kind == ProjKind::Roll && noticed.contains(&p.id) {
                 return !gone;
             }
-            if hits_player(ppos, 1.0, p.pos, p.radius) {
+            if hits_player(ppos, p.pos, p.radius) {
                 if p.kind == ProjKind::Bomb {
                     explode = true;
                 } else {
