@@ -154,6 +154,7 @@ fn drive(
     if h.buffs && !buffs.speed.active() {
         buffs.speed = Buff { remaining: 20.0, duration: 30.0 };
         buffs.fire_rate = Buff { remaining: 9.0, duration: 30.0 };
+        buffs.piercing = Buff { remaining: 15.0, duration: 30.0 };
     }
     rig.yaw += h.turn * dt;
     if h.items && h.started && before < 1.0 && t >= 1.0 {

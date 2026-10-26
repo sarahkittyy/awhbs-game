@@ -314,14 +314,21 @@ pub fn launch(kind: Kind, enemy_pos: Vec3, player_pos: Vec3, player_vel: Vec3, c
             (proj, from, (chest - from).normalize_or(dir) * LINEAR_SPEED)
         }
         ProjKind::Roll => {
+            // bowled at where the player will be if they keep moving the same way
             let from = Vec3::new(enemy_pos.x, 0.0, enemy_pos.z) + dir * 0.9 + Vec3::Y * 0.4;
-            (proj, from, dir * ROLL_SPEED)
+            let aim = intercept_dir(from, player_pos, pvel, ROLL_SPEED).unwrap_or(dir);
+            (proj, from, aim * ROLL_SPEED)
         }
         ProjKind::Lob => {
+            // full lead: flight time depends on range, so refine the landing point a few times
             let from = enemy_pos + Vec3::Y * info.height * 0.9;
-            let flight = 1.0 + dist / 25.0;
-            let target = player_pos + pvel * flight * 0.5 + Vec3::Y * 0.4;
-            (proj, from, lob_velocity(from, target, flight))
+            let mut target = player_pos;
+            let mut flight = 1.0 + dist / 25.0;
+            for _ in 0..4 {
+                target = player_pos + pvel * flight;
+                flight = 1.0 + Vec3::new(target.x - from.x, 0.0, target.z - from.z).length() / 25.0;
+            }
+            (proj, from, lob_velocity(from, target + Vec3::Y * 0.4, flight))
         }
         ProjKind::Bomb => {
             let from = enemy_pos + Vec3::Y * info.height * 0.3;
@@ -386,6 +393,30 @@ pub fn proj_stats(kind: ProjKind) -> (f32, f32) {
     }
 }
 
+/// Horizontal direction to fire a projectile of `speed` from `from` so it meets a target at
+/// `target` moving with constant `target_vel` (both read on the floor plane). `None` when the
+/// target outruns the shot.
+pub fn intercept_dir(from: Vec3, target: Vec3, target_vel: Vec3, speed: f32) -> Option<Vec3> {
+    let rel = Vec3::new(target.x - from.x, 0.0, target.z - from.z);
+    let v = Vec3::new(target_vel.x, 0.0, target_vel.z);
+    // |rel + v t| = speed t  ->  (v.v - s^2) t^2 + 2 (rel.v) t + rel.rel = 0
+    let a = v.length_squared() - speed * speed;
+    let b = 2.0 * rel.dot(v);
+    let c = rel.length_squared();
+    let t = if a.abs() < 1e-4 {
+        (b.abs() > 1e-6).then(|| -c / b)?
+    } else {
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let sq = disc.sqrt();
+        let (t1, t2) = ((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a));
+        [t1, t2].into_iter().filter(|t| *t > 0.0).reduce(f32::min)?
+    };
+    (rel + v * t).try_normalize()
+}
+
 /// Launch velocity that lands on `to` after `flight` seconds.
 pub fn lob_velocity(from: Vec3, to: Vec3, flight: f32) -> Vec3 {
     (to - from) / flight + Vec3::Y * 0.5 * LOB_GRAVITY * flight
@@ -419,6 +450,8 @@ pub const HEART_INTERVAL: (f32, f32) = (45.0, 70.0);
 pub const POWERUP_INTERVAL: (f32, f32) = (25.0, 40.0);
 pub const BUFF_DURATION: (f32, f32) = (15.0, 30.0);
 pub const SPEED_BUFF: f32 = 1.4;
+/// Enemies one round can hit while the piercing buff is up.
+pub const PIERCE_MAX: usize = 5;
 pub const FIRE_RATE_BUFF: f32 = 1.6;
 
 /// Random pickup location at least 8 m from the player; `a`, `b` uniform in 0..1.
@@ -478,18 +511,27 @@ pub enum Powerup {
     Blink,
     /// one-shot: temporary shield covering every heart
     Shield,
+    /// timed: each round passes through up to `PIERCE_MAX` enemies
+    Piercing,
 }
 
 impl Powerup {
-    pub const ALL: [Powerup; 6] =
-        [Powerup::Speed, Powerup::FireRate, Powerup::MaxHealth, Powerup::Blast, Powerup::Blink, Powerup::Shield];
+    pub const ALL: [Powerup; 7] = [
+        Powerup::Speed,
+        Powerup::FireRate,
+        Powerup::MaxHealth,
+        Powerup::Blast,
+        Powerup::Blink,
+        Powerup::Shield,
+        Powerup::Piercing,
+    ];
 
     pub fn weight(self) -> f32 {
         match self {
             Powerup::Speed | Powerup::FireRate => 2.0,
             Powerup::MaxHealth => 1.0,
             Powerup::Blast | Powerup::Blink => 2.0,
-            Powerup::Shield => 1.5,
+            Powerup::Shield | Powerup::Piercing => 1.5,
         }
     }
 
@@ -518,3 +560,22 @@ pub const BLAST_DAMAGE: f32 = 12.0;
 pub const BLAST_KNOCK: f32 = 15.0;
 pub const BLINK_RANGE: f32 = 14.0;
 pub const BLINK_INVULN: f32 = 0.35;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intercept_meets_a_moving_target() {
+        let from = Vec3::ZERO;
+        let target = Vec3::new(10.0, 0.0, 0.0);
+        let vel = Vec3::new(0.0, 0.0, 6.0);
+        let dir = intercept_dir(from, target, vel, ROLL_SPEED).unwrap();
+        // the shot and the target arrive at the same place at the same time
+        let t = (target.x / (dir.x * ROLL_SPEED)).abs();
+        let shot = from + dir * ROLL_SPEED * t;
+        assert!(shot.distance(target + vel * t) < 0.01);
+        // too fast to catch
+        assert!(intercept_dir(from, target, Vec3::new(50.0, 0.0, 0.0), ROLL_SPEED).is_none());
+    }
+}

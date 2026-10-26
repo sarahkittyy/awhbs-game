@@ -694,7 +694,10 @@ fn spawn_hud(mut msgs: MessageReader<RunBegin>, mut commands: Commands, assets: 
                 ..default()
             })
             .with_children(|b| {
-                for (i, img) in [&assets.item_speed, &assets.item_firerate, &assets.item_shield].into_iter().enumerate() {
+                for (i, img) in [&assets.item_speed, &assets.item_firerate, &assets.item_shield, &assets.item_piercing]
+                    .into_iter()
+                    .enumerate()
+                {
                     b.spawn((
                         BuffSlot(i),
                         Node {
@@ -904,7 +907,7 @@ fn hud_ammo(gun: Res<Gun>, mut icons: Query<(&MagIcon, &mut ImageNode)>, mut tex
 
 fn hud_buffs(buffs: Res<Buffs>, mut slots: Query<(&BuffSlot, &mut Node, &mut BackgroundGradient)>) {
     for (BuffSlot(i), mut node, mut grad) in &mut slots {
-        let b = [buffs.speed, buffs.fire_rate, buffs.shield][*i];
+        let b = [buffs.speed, buffs.fire_rate, buffs.shield, buffs.piercing][*i];
         let display = if b.active() { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;

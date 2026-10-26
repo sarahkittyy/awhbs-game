@@ -110,6 +110,7 @@ struct World {
     gun_cd: f32,
     speed_buff: f32,
     rate_buff: f32,
+    pierce_buff: f32,
     fleeing: bool,
     inventory: Vec<Powerup>,
     shield_left: f32,
@@ -155,6 +156,7 @@ impl World {
             gun_cd: 0.0,
             speed_buff: 0.0,
             rate_buff: 0.0,
+            pierce_buff: 0.0,
             fleeing: false,
             inventory: vec![],
             shield_left: 0.0,
@@ -267,6 +269,7 @@ impl World {
         }
         self.speed_buff = (self.speed_buff - dt).max(0.0);
         self.rate_buff = (self.rate_buff - dt).max(0.0);
+        self.pierce_buff = (self.pierce_buff - dt).max(0.0);
         self.shield_left = (self.shield_left - dt).max(0.0);
         self.use_items();
 
@@ -547,16 +550,47 @@ impl World {
             return;
         }
         let Some(i) = self.target else { return };
-        let d = flat(self.enemies[i].pos - self.pos).length();
+        let to = flat(self.enemies[i].pos - self.pos);
+        let d = to.length();
         if self.rng.f32() < bot.accuracy * falloff(d) {
             self.res.hits += 1;
-            self.enemies[i].hp -= ROUND_DAMAGE;
-            if self.enemies[i].hp <= 0.0 {
-                let e = self.enemies.swap_remove(i);
-                self.res.kills += 1;
+            let mut struck = vec![i];
+            if self.pierce_buff > 0.0 {
+                // the round carries on along the same line through enemies behind the target
+                let dir = to.normalize_or(Vec3::X);
+                let mut behind: Vec<(f32, usize)> = self
+                    .enemies
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .filter_map(|(j, e)| {
+                        let rel = flat(e.pos - self.pos);
+                        let along = rel.dot(dir);
+                        let off = (rel - dir * along).length();
+                        (along > d && off < e.kind.info().radius()).then_some((along, j))
+                    })
+                    .collect();
+                behind.sort_by(|a, b| a.0.total_cmp(&b.0));
+                struck.extend(behind.into_iter().take(PIERCE_MAX - 1).map(|(_, j)| j));
+            }
+            for &j in &struck {
+                self.enemies[j].hp -= ROUND_DAMAGE;
+            }
+            let before = self.enemies.len();
+            let mut drops = vec![];
+            self.enemies.retain(|e| {
+                if e.hp <= 0.0 {
+                    drops.push(flat(e.pos));
+                }
+                e.hp > 0.0
+            });
+            self.res.kills += (before - self.enemies.len()) as u32;
+            if self.enemies.len() != before {
                 self.target = None;
+            }
+            for pos in drops {
                 if self.rng.f32() < AMMO_DROP_CHANCE {
-                    self.pickups.push(Pickup { kind: Pick::Ammo, pos: flat(e.pos), life: PICKUP_LIFE });
+                    self.pickups.push(Pickup { kind: Pick::Ammo, pos, life: PICKUP_LIFE });
                 }
             }
         }
@@ -744,6 +778,10 @@ impl World {
                     }
                     Pick::Power(Powerup::Speed) => {
                         self.speed_buff = range(&mut self.rng, BUFF_DURATION.0, BUFF_DURATION.1);
+                        true
+                    }
+                    Pick::Power(Powerup::Piercing) => {
+                        self.pierce_buff = range(&mut self.rng, BUFF_DURATION.0, BUFF_DURATION.1);
                         true
                     }
                     Pick::Power(_) => {

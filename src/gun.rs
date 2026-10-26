@@ -185,27 +185,23 @@ fn shoot(
     let spread = Vec3::new(rand_range(-1.0, 1.0), rand_range(-1.0, 1.0), 0.0) * SPREAD;
     let dir = (cam.rotation() * (Vec3::NEG_Z + spread)).normalize();
 
-    // nearest thing along the ray: an enemy, a shootable projectile, or arena geometry
-    let mut best = RANGE;
-    let mut target: Option<Entity> = None;
-    let mut target_is_enemy = false;
+    // arena geometry stops the round; past the floor mesh the void floor is still y = 0
+    let mut wall = RANGE;
     let mut surface = None;
     if let Some((d, n)) = world.cast(origin, dir) {
-        best = d;
+        wall = d;
         surface = Some(n);
     } else if dir.y < 0.0 {
-        // past the edge of the floor mesh the void floor is still y = 0
-        best = best.min(-origin.y / dir.y);
+        wall = wall.min(-origin.y / dir.y);
         surface = Some(Vec3::Y);
     }
+    // everything shootable in front of the wall, nearest first
+    let mut along: Vec<(f32, Entity, bool)> = Vec::new();
     for (e, t, enemy) in &enemies {
         let info = enemy.kind.info();
-        let base = t.translation();
-        if let Some(d) = ray_cylinder(origin, dir, base, info.radius(), info.height) {
-            if d < best {
-                best = d;
-                target = Some(e);
-                target_is_enemy = true;
+        if let Some(d) = ray_cylinder(origin, dir, t.translation(), info.radius(), info.height) {
+            if d < wall {
+                along.push((d, e, true));
             }
         }
     }
@@ -214,45 +210,57 @@ fn shoot(
             continue;
         }
         if let Some(d) = ray_sphere(origin, dir, t.translation(), p.radius + 0.25) {
-            if d < best {
-                best = d;
-                target = Some(e);
-                target_is_enemy = false;
+            if d < wall {
+                along.push((d, e, false));
             }
         }
     }
-    let end = origin + dir * best;
+    along.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    match target {
-        Some(e) if target_is_enemy => {
+    // a normal round stops at the first thing it hits; a piercing one carries on through up to
+    // PIERCE_MAX enemies (orbs it passes on the way pop for free)
+    let pierce = buffs.pierce();
+    let mut enemies_hit = 0;
+    let mut end = wall;
+    let mut stopped = false;
+    for (d, e, is_enemy) in along {
+        let point = origin + dir * d;
+        end = d;
+        if is_enemy {
             hits.write(EnemyHit {
                 entity: e,
-                point: end,
+                point,
                 dir,
                 damage: balance::ROUND_DAMAGE,
                 knock: 0.0,
             });
-            gun.hit_marker = 0.12;
-        }
-        Some(e) => {
+            enemies_hit += 1;
+        } else {
             fx.commands.entity(e).despawn();
             let s = fx.assets.sfx.projectile_pop.clone();
             fx.sound(&s, 0.6);
             let img = fx.assets.p_star.clone();
-            fx.burst(&img, end, 10, 6.0, 0.35, Color::srgb(2.5, 0.8, 0.3), 0.4);
-            gun.hit_marker = 0.12;
+            fx.burst(&img, point, 10, 6.0, 0.35, Color::srgb(2.5, 0.8, 0.3), 0.4);
         }
-        None => {
-            if let Some(normal) = surface.filter(|_| best < RANGE) {
-                let img = fx.assets.p_dirt.clone();
-                fx.burst(&img, end, 4, 3.0, 0.25, Color::srgba(0.3, 0.3, 0.32, 0.8), 0.35);
-                spawn_decal(&mut fx, &mut world.decals, end, normal);
-            }
+        gun.hit_marker = 0.12;
+        if pierce == 1 || enemies_hit >= pierce {
+            stopped = true;
+            break;
         }
     }
+    if !stopped {
+        end = wall;
+        if let Some(normal) = surface.filter(|_| wall < RANGE) {
+            let point = origin + dir * wall;
+            let img = fx.assets.p_dirt.clone();
+            fx.burst(&img, point, 4, 3.0, 0.25, Color::srgba(0.3, 0.3, 0.32, 0.8), 0.35);
+            spawn_decal(&mut fx, &mut world.decals, point, normal);
+        }
+    }
+    let end = origin + dir * end;
 
     let muzzle = muzzle_t.translation();
-    spawn_tracer(&mut fx, muzzle, end);
+    spawn_tracer(&mut fx, muzzle, end, pierce > 1);
     let img = fx.assets.p_muzzle.clone();
     fx.particle(
         &img,
@@ -328,13 +336,15 @@ fn start_reload(gun: &mut Gun, fx: &mut Fx) {
     fx.sound(&s, 0.7);
 }
 
-fn spawn_tracer(fx: &mut Fx, from: Vec3, to: Vec3) {
+fn spawn_tracer(fx: &mut Fx, from: Vec3, to: Vec3, piercing: bool) {
     let len = from.distance(to);
     if len < 0.5 {
         return;
     }
     let img = fx.assets.p_trace.clone();
-    let mat = fx.unlit(&img, Color::srgb(3.0, 2.0, 0.7));
+    // piercing rounds leave a cold blue-white streak
+    let color = if piercing { Color::srgb(1.6, 2.4, 3.6) } else { Color::srgb(3.0, 2.0, 0.7) };
+    let mat = fx.unlit(&img, color);
     let quad = fx.assets.quad.clone();
     let mid = (from + to) / 2.0;
     let dir = (to - from) / len;

@@ -49,6 +49,7 @@ pub struct Buffs {
     pub shield: Buff,
     /// hits the shield can still absorb; it covers every heart when raised
     pub shield_points: i32,
+    pub piercing: Buff,
 }
 
 impl Buffs {
@@ -57,6 +58,10 @@ impl Buffs {
     }
     pub fn fire_rate_mult(&self) -> f32 {
         if self.fire_rate.active() { FIRE_RATE_MULT } else { 1.0 }
+    }
+    /// Enemies one round can hit.
+    pub fn pierce(&self) -> usize {
+        if self.piercing.active() { balance::PIERCE_MAX } else { 1 }
     }
     pub fn shield_up(&self) -> i32 {
         if self.shield.active() { self.shield_points } else { 0 }
@@ -116,6 +121,7 @@ pub fn powerup_icon(assets: &crate::assets::GameAssets, p: Powerup) -> Handle<Im
         Powerup::Blast => assets.item_blast.clone(),
         Powerup::Blink => assets.item_blink.clone(),
         Powerup::Shield => assets.item_shield.clone(),
+        Powerup::Piercing => assets.item_piercing.clone(),
     }
 }
 
@@ -132,6 +138,7 @@ pub fn spawn_pickup(fx: &mut Fx, kind: PickKind, pos: Vec3) {
                 Powerup::Blast => Color::srgba(1.0, 0.45, 0.1, 0.85),
                 Powerup::Blink => Color::srgba(0.5, 1.0, 0.85, 0.85),
                 Powerup::Shield => Color::srgba(0.45, 0.7, 1.0, 0.9),
+                Powerup::Piercing => Color::srgba(0.85, 0.85, 1.0, 0.9),
             };
             (powerup_icon(a, p), 1.0, glow)
         }
@@ -299,7 +306,11 @@ fn update_pickups(
             }
             PickKind::Power(p) => {
                 let dur = rand_range(BUFF_DURATION.0, BUFF_DURATION.1);
-                let b = if p == Powerup::Speed { &mut buffs.speed } else { &mut buffs.fire_rate };
+                let b = match p {
+                    Powerup::Speed => &mut buffs.speed,
+                    Powerup::Piercing => &mut buffs.piercing,
+                    _ => &mut buffs.fire_rate,
+                };
                 *b = Buff {
                     remaining: dur,
                     duration: dur,
@@ -341,7 +352,7 @@ fn heal_fx(fx: &mut Fx, at: Vec3) {
 fn tick_buffs(time: Res<Time>, mut buffs: ResMut<Buffs>, mut fx: Fx) {
     let dt = time.delta_secs();
     let buffs = &mut *buffs;
-    for b in [&mut buffs.speed, &mut buffs.fire_rate, &mut buffs.shield] {
+    for b in [&mut buffs.speed, &mut buffs.fire_rate, &mut buffs.shield, &mut buffs.piercing] {
         if b.remaining > 0.0 {
             b.remaining -= dt;
             if b.remaining <= 0.0 {
